@@ -1,0 +1,253 @@
+---
+title: "Covid 19 Death Prediction Model 20200315"
+author: "Josh Harwood"
+date: "March 15, 2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+For this problem, I modeling the effect on the log of daily new confirmed cases to the log of daily new deaths using transfer function analysis (autoregression).
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+library(readr)
+
+# Confirmed
+download.file("https://data.humdata.org/hxlproxy/api/data-preview.csv?url=https%3A%2F%2Fraw.githubusercontent.com%2FCSSEGISandData%2FCOVID-19%2Fmaster%2Fcsse_covid_19_data%2Fcsse_covid_19_time_series%2Ftime_series_covid19_confirmed_global.csv&filename=time_series_covid19_confirmed_global.csv","confirmed.csv")
+
+# deaths
+download.file("https://data.humdata.org/hxlproxy/api/data-preview.csv?url=https%3A%2F%2Fraw.githubusercontent.com%2FCSSEGISandData%2FCOVID-19%2Fmaster%2Fcsse_covid_19_data%2Fcsse_covid_19_time_series%2Ftime_series_covid19_deaths_global.csv&filename=time_series_covid19_deaths_global.csv","deaths.csv")
+
+# recovered
+download.file("https://data.humdata.org/hxlproxy/api/data-preview.csv?url=https%3A%2F%2Fraw.githubusercontent.com%2FCSSEGISa
+ndData%2FCOVID-19%2Fmaster%2Fcsse_covid_19_data%2Fcsse_covid_19_time_series%2Ftime_series_covid19_recovered_global.csv&filen
+ame=time_series_covid19_recovered_global.csv"
+,"recovered.csv")
+
+df.confirmed = read_csv("confirmed.csv")
+df.deaths = read_csv("deaths.csv")
+df.recovered = read_csv("recovered.csv")
+```
+
+```{r}
+library(tidyverse)
+# US
+# confirmed
+df.confirmed.grp <- df.confirmed %>%
+  mutate(country= as.factor(`Country/Region`)) %>%
+  filter(country == "US", ) %>%
+  gather(key="date", value="confirmed", 5:94) %>%
+  select(-`Province/State`,-`Country/Region`,-`Lat`,-`Long`) %>%
+  mutate(date=as.Date(date,"%m/%d/%y")) %>%
+  group_by(country, date) %>%
+  arrange(date) %>%
+  summarize(confirmed = sum(confirmed)) %>%
+  mutate(daily.confirmed = confirmed-dplyr::lag(confirmed,n=1)) %>%
+  mutate(log.daily.confirmed = log(1+confirmed-dplyr::lag(confirmed,n=1),base= exp(1))) %>%
+  select(date,log.daily.confirmed) %>%
+  filter(date>=as.Date("03/01/2020","%m/%d/%y")) #This is when cases trended in a consistent manner
+
+# deaths
+df.deaths.grp <- df.deaths%>%
+  mutate(country= as.factor(`Country/Region`)) %>%
+  filter(country == "US") %>%
+  gather(key="date", value="deaths", 5:94) %>%
+  select(-`Province/State`,-`Country/Region`,-`Lat`,-`Long`) %>%
+  mutate(date=as.Date(date,"%m/%d/%y")) %>%
+  group_by(country, date) %>%
+  arrange(date) %>%
+  summarize(deaths = sum(deaths)) %>%
+  mutate(daily.deaths = deaths-dplyr::lag(deaths,n=1)) %>%
+  mutate(log.daily.deaths = log(1+deaths-dplyr::lag(deaths,n=1),base= exp(1))) %>%
+  select(date,log.daily.deaths) %>%
+  filter(date>=as.Date("03/01/2020","%m/%d/%y")) #This is when cases trended in a consistent manner
+
+# recovered
+df.recovered.grp <- df.recovered%>%
+  mutate(country= as.factor(`Country/Region`)) %>%
+  filter(country == "US") %>%
+  gather(key="date", value="recovered", 5:94) %>%
+  select(-`Province/State`,-`Country/Region`,-`Lat`,-`Long`) %>%
+  mutate(date=as.Date(date,"%m/%d/%y")) %>%
+  group_by(country, date) %>%
+  arrange(date) %>%
+  summarize(recovered = sum(recovered)) %>%
+  mutate(daily.recovered = recovered-dplyr::lag(recovered,n=1)) %>%
+  mutate(log.daily.recovered = log(1+recovered-dplyr::lag(recovered,n=1),base= exp(1))) %>%
+  select(date,log.daily.recovered) %>%
+  filter(date>=as.Date("03/01/2020","%m/%d/%y")) #This is when cases trended in a consistent manner
+```
+
+Compare Graphs
+```{r fig.width=9}
+plot(df.confirmed.grp$date, df.confirmed.grp$log.daily.confirmed,type='l',lty=1,col='black',
+     ylim=c(0,10))
+lines(df.deaths.grp$date, df.deaths.grp$log.daily.deaths, lty = 1, col='red')
+lines(df.recovered.grp$date, df.recovered.grp$log.daily.recovered, lty = 1, col='blue')
+```
+
+Generate a time series. Certainly none of these series is stationary currently.
+```{r}
+library(TSA)
+library(lubridate)
+# Confirmed
+confirmed.ts.prep = df.confirmed.grp[,3]
+covid.confirmed.ts = ts(data=confirmed.ts.prep, start = decimal_date(as.Date("2020-03-15")), 
+                    frequency = 365.25)
+#365.25 accounts for leap year
+plot(covid.confirmed.ts)
+# decimal_date() allows me to start on a specific date
+
+# Determine Prewhitening formula for confirmed Cases
+acf(as.vector(covid.confirmed.ts))
+pacf(as.vector(covid.confirmed.ts))
+# Appears to be AR(1) model
+mod1.conf <- arima(covid.confirmed.ts, order = c(3,1,3), 
+                 seasonal = list(order=c(0,0,0))) 
+mod1.conf
+plot(window(rstandard(mod1.conf), start = decimal_date(as.Date("2020-03-15"))), 
+     ylab = 'Standardized Residuals', type = 'o')
+abline(h=0)
+# ACF of Standardized Residuals
+acf(as.vector(rstandard(mod1.conf)), lag.max = 40,ci.type="ma")
+pacf(as.vector(rstandard(mod1.conf)), lag.max = 40)
+# qqplot
+qqnorm(window(rstandard(mod1.conf), start = decimal_date(as.Date("2020-03-15"))))
+qqline(window(rstandard(mod1.conf), start = decimal_date(as.Date("2020-03-15"))))
+Box.test(residuals(mod1.conf),lag=30,type=c("Ljung-Box"))
+```
+Looking at the first 30 lags our model residuals fail to reject the null hypothesis of the Ljung-Box test the the residuals are independently distributed with no serial autocorrelation.
+
+
+```{r}
+# Transfer Function for Deaths
+# Deaths
+deaths.ts.prep = df.deaths.grp[,3]
+covid.deaths.ts = ts(data=deaths.ts.prep, start = decimal_date(as.Date("2020-03-15")), 
+                    frequency = 365.25) 
+conf.death.ts = ts.intersect(covid.confirmed.ts, covid.deaths.ts)
+
+plot(conf.death.ts,yax.flip=T)
+
+library(forecast)
+fitwhite.x <- residuals(mod1.conf)
+fitwhite.y <- residuals(Arima(covid.deaths.ts, model=mod1.conf))
+print(ccf(as.vector(fitwhite.x),as.vector(fitwhite.y), ylab='ccf'))
+
+```
+
+We see significant positive cross-correlation after pre-whitening which indicates that the two series are likely not spuriously correlated. 
+
+```{r}
+conf.data <- df.confirmed.grp %>%
+  select(date, log.daily.confirmed)
+death.data <- df.deaths.grp %>%
+  select(date, log.daily.deaths)
+death.mod.data <- conf.data %>%
+  left_join(death.data, by= 'date') %>%
+  select(date,log.daily.confirmed, log.daily.deaths) %>%
+  mutate(lag14.log.confirmed = lag(log.daily.confirmed, n=14),
+         lag7.log.confirmed = lag(log.daily.confirmed, n=7)) %>%
+  filter(date >= as.Date("03/15/2020","%m/%d/%y"))
+
+# Only lag 7 was significant
+death.mod1=lm(log.daily.deaths~lag14.log.confirmed+lag7.log.confirmed,
+              data=death.mod.data)
+summary(death.mod1)
+acf(residuals(death.mod1),ci.type='ma')
+pacf(residuals(death.mod1))
+# eacf(residuals(death.mod1))
+qqnorm(window(rstandard(death.mod1)))
+qqline(window(rstandard(death.mod1)))
+Box.test(residuals(death.mod1),lag=30,type=c("Ljung-Box"))
+
+
+# Don't need this, just lagged regression noq
+# # Try ARMA(3,3) for Zt
+# # Turned out that all terms are not significant except the ar2
+# death.autoreg <- arima(death.mod.data$log.daily.deaths, order=c(1,0,1),
+#                        xreg=death.mod.data$lag14.log.confirmed)#,
+#                        # fixed=c(0,0,NA,0,0,0,NA,NA))
+# 
+# # Now check the residuals
+# plot(window(rstandard(death.autoreg)), 
+#      ylab = 'Standardized Residuals', type = 'o')
+# abline(h=0)
+# # ACF of Standardized Residuals
+# acf(as.vector(rstandard(death.autoreg)), lag.max = 40,ci.type="ma")
+# pacf(as.vector(rstandard(death.autoreg)), lag.max = 40)
+# # qqplot
+# qqnorm(window(rstandard(death.autoreg)))
+# qqline(window(rstandard(death.autoreg)))
+# Box.test(residuals(death.autoreg),lag=30,type=c("Ljung-Box"))
+```
+
+
+
+Predict next week's deaths:
+```{r }
+pred <- predict(death.mod1,
+                newdata = death.mod.data[31:37,5:6], se.fit = TRUE)
+preds.real <- data.frame(date = seq(as.Date("2020/04/21"), by = "day", length.out = 7),
+                         forecast.deaths = exp(pred$fit), lower = exp(pred$fit-2*pred$se.fit),
+                         upper=exp(pred$fit+2*pred$se.fit))
+                                                              
+deaths <- exp(death.mod.data$log.daily.deaths)
+
+par(mar=c(3,3,3,3)) #change plotting margins to make graph fit
+plot(x=death.mod.data$date, y=deaths, 
+     type = 'l', col='black',ylab=NA, xlab=NA,
+     xlim=as.Date(c("2020-03-15", "2020-04-27")))
+lines(preds.real$date, preds.real$forecast.deaths, type= 'l', col='red')
+lines(preds.real$date, preds.real$lower, type = 'l', col='blue', lty=5)
+lines(preds.real$date, preds.real$upper, type = 'l', col='blue', lty=5)
+
+# par(new = t)
+# plot(x=death.mod.data$date,
+#      y=exp(death.mod.data$log.daily.confirmed), type = 'l', 
+#      col= 'blue',axes = F,ylab=NA)
+mtext(side = 1, line = 2, "Date")
+mtext(side = 2, line = 2, "Daily Death Count")
+mtext(side = 3, line = 2, "Daily Covid 19 Death Forecast")
+# mtext(side = 4, line = 2, "Lag 7 Daily Confirmed Case Count")
+# axis(side = 4)
+legend("topleft",legend=c("Actual Deaths","Predicted Deaths", "+/- 2 Standard Errors"),
+       col=c("black","red","blue", "blue"), lty=c(1,1,5,5), inset = 0.03)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
